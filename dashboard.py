@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import re
 
 # Page config
 st.set_page_config(
@@ -22,6 +23,7 @@ st.markdown("""
     .stMetric [data-testid="stMetricDelta"] {color: #1f1f1f !important;}
     h1 {color: #2E86AB; padding-bottom: 10px; border-bottom: 3px solid #2E86AB;}
     h3 {color: #444; margin-top: 20px;}
+    .upload-section {background-color: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,139 +82,252 @@ def load_product_pricing():
     }
     return pricing_data
 
-# Load data function
+# Preprocessing function
 @st.cache_data
-def load_data():
-    # Load Excel file
-    file_path = r'C:\gems\data\preprocessed_data_01102025.xlsx'
+def preprocess_data(df_raw):
+    """Preprocess raw Facebook Ads data"""
     
-    try:
-        df = pd.read_excel(file_path)
-        
-        # Ensure numeric columns are properly typed
-        numeric_cols = ['Amount Spent', 'Impressions', 'Unique outbound clicks', 
-                       'Adds to cart', 'Checkouts initiated', 'Purchases', 
-                       'CPM', 'Cost per Click', 'Cost per ATC', 'Frequency', 'Post comments']
-        
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-        # Extract Ad Manager from Campaign name
-        def extract_ad_manager(campaign_name):
-            if pd.isna(campaign_name):
-                return 'Other'
-            
-            campaign_str = str(campaign_name).upper()
-            
-            # Search for "AD-" pattern
-            if 'AD-' in campaign_str:
-                # Find the position after "AD-"
-                start_idx = campaign_str.find('AD-') + 3
-                
-                # Find the next "," after "AD-" (priority)
-                comma_idx = campaign_str.find(',', start_idx)
-                # Find the next "*" after "AD-"
-                star_idx = campaign_str.find('*', start_idx)
-                
-                # Determine end index: comma takes priority, then star
-                if comma_idx != -1:
-                    end_idx = comma_idx
-                elif star_idx != -1:
-                    end_idx = star_idx
-                else:
-                    end_idx = -1
-                
-                if end_idx != -1:
-                    # Extract the name between "AD-" and the delimiter
-                    ad_manager = campaign_str[start_idx:end_idx].strip()
-                    return ad_manager if ad_manager else 'Other'
-            
+    # Select needed columns
+    columns_needed = [
+        'Reporting starts', 'Reporting ends',
+        'Campaign name', 'Ad set name', 'Ad name',
+        'Age', 'Gender',
+        'Amount spent (USD)', 'Impressions',
+        'CPM (cost per 1,000 impressions) (USD)', 'Frequency', 'Post comments',
+        'Unique outbound clicks', 'Cost per unique outbound click (USD)',
+        'Adds to cart', 'Cost per add to cart (USD)',
+        'Checkouts initiated', 'Purchases'
+    ]
+    
+    df = df_raw[columns_needed].copy()
+    
+    # Rename columns
+    df = df.rename(columns={
+        'CPM (cost per 1,000 impressions) (USD)': 'CPM',
+        'Amount spent (USD)': 'Amount Spent',
+        'Cost per unique outbound click (USD)': 'Cost per Click',
+        'Cost per add to cart (USD)': 'Cost per ATC'
+    })
+    
+    # Niche dictionary
+    niche_dict = {
+        'MEX': 'Tự hào Mexico', 'LAT': 'Tự hào Latin Countries NOT Mexico', 'HSP': 'Hispanic',
+        'DTG': 'Dusted Girl', 'QCUS': 'Quick Custom', 'PSG': 'Plus Size Girl', 'AAA': 'Design trơn',
+        'KID': 'For Kids', 'FTH': 'Faith', 'CPL': 'For Couples', '3T': '3D TShirt', 'BST': 'For Besties',
+        '3H': '3D Hoodie', 'GDT': 'For Granddaughter', 'DAU': 'For Daughter', 'GSN': 'For Grandson',
+        'SON': 'For Son', 'HSB': 'For Husband', 'WIF': 'For Wife', 'DAD': 'For Dad', 'MOM': 'For Mom',
+        'GRM': 'For Grandma', 'GRP': 'For Grandpa', 'FAM': 'Family', 'DOG': 'For Dog Lovers',
+        'CAT': 'For Cat Lovers', 'PET': 'Other Pet Lovers', 'PME': 'Pet Memorial', 'HME': 'Human Memorial',
+        'FTN': 'For Fitness People', 'COL': 'For Colleagues', 'BLV': 'For Book Lovers',
+        'GRAD': 'For Graduation', 'DGM': 'For Dog Mom', 'GRK': 'For Grandkids', 'NUR': 'For Nurses',
+        'DOC': 'For Doctors', 'FIF': 'For Firefighters', 'OFC': 'For Officers (Police)',
+        'OFW': 'For Office Workers', 'TEACH': 'For Teachers', 'READ': 'For Reading Lovers',
+        'FISH': 'For Fishing Lovers', 'CAMP': 'For Camping Lovers', 'GARD': 'For Gardening Lovers',
+        'YOGA': 'For Yogo Lovers', 'SPORT': 'For Sport Lovers', 'VETRN': 'For veterans',
+        'RETIRE': 'For retirement', 'BDAY': 'For birthday', 'GRILL': 'For grilling lovers',
+        'GOLF': 'For golf lovers', 'COOK': 'For cooking lovers', 'INDE': 'For independence day/Patriotrism',
+        'DILA': 'For Daughter-In-Law', 'SILA': 'For Son-In-Law', 'MOLA': 'For Mother-In-Law',
+        'FALA': 'For Father-In-Law', 'BUS': 'For Bus Driver', 'TRUCK': 'For Truck Driver',
+        'WEDD': 'Gift for wedding day', 'LAW': 'For Lawyers', 'XMAS': 'For Xmas'
+    }
+    
+    # Product dictionary
+    product_dict = {
+        'HB': 'Leather Handbag', 'TB': '20oz/30oz Tumbler', 'WW': 'Leather Women Wallet',
+        'DKB': 'Backpack Duckbilled', 'SCRD': 'Square Ceramic Ring Dish', 'JARL': 'Mason Jar Light',
+        'HGO': 'Plastic Hanging Ornament', 'CGOR': 'Circle Glass Ornament',
+        'RSUN': 'Round Stained Glass Window Hanging Suncatcher', 'HRTS': 'Heart Stone',
+        'APLA': 'Custom Shape Acrylic Plaque', 'MAGN': 'Fridge Magnet Custom Shape',
+        'CEW': 'Classic Engraved Men Wallet', 'EWG': 'Engraved Whiskey Glass', 'JRNL': 'Leather Journal',
+        'CSUN': 'Custom Suncatcher', 'HCE': 'Heart Ceramic Ornament', 'RCE': 'Round Ceramic Ornament',
+        'TIE': 'Custom Tie', 'BNIE': 'Custom Beanie', 'LANT': 'Christmas Lantern',
+        'ACO': 'Acrylic Ornament With Custom Shape (Xmas)', 'TWS': 'Ugly Wool Sweatshirt',
+        'LECA': 'Led Candle', 'WDO': 'Wood Ornament Custom Shape (Xmas)', 'BLK': 'Sherpa/Fleece Blanket',
+        'PLW': 'Custom Pillow (1-side print)', 'PJA': 'Adult Pajama Pants', 'MG': 'White Edge-to-Edge Mug',
+        'DRM': 'Doormat', 'MZB': 'Music Box', 'XSO': 'Xmas Decorative Sock',
+        'WCA': 'Wood Car Hanging Ornament With Custom Shape',
+        'ACA': 'Acrylic Car Hanging Ornament With Custom Shape', 'NPR': 'No-Print Product',
+        'ALCA': 'Aluminum Wallet Card 1 Side Print', 'WIGL': 'Wine Glass 15OZ',
+        'RCRF': 'Round Ceramic Ring Dish (Full Printed)', 'SCRF': 'Square Ceramic Ring Dish (Full Printed)',
+        'TMS': 'Tape Measure 5M', 'BRG': '16OZ Beer Glass', 'GLM': 'Glass Mug 11OZ',
+        'HAP': 'Heart Shaped Acrylic Plaque', 'LGT': 'Luggage Tag', 'PPH': 'Passport Holder/Cover',
+        'RWG': 'Round Whiskey Glass, 2 Side Print', 'VIS': 'Car Visor Clip, 1 Side Print, 2 Layers',
+        'TAG': 'Dogtag Necklace', 'CEV': '15OZ Ceramic Flower Vase',
+        'CEP': 'Ceramic Plant Pot with Bamboo Tray', 'WSO': 'Wooden Slider Ornament',
+        'PMGW': '12OZ White Pottery Mug', 'PMGB': '12OZ Blue Pottery Mug',
+        'PMGO': '12OZ Orange Pottery Mug', 'PMGY': '12OZ Yellow Pottery Mug',
+        'WPLA': '2 Layer Wood Plaque With Flat Base', 'PMAM': 'Pink Marble Mug',
+        'BTL': 'Bottle Lamp 2.9x13in'
+    }
+    
+    # Parse campaign name
+    def parse_campaign_name(campaign_name):
+        if pd.isna(campaign_name):
+            return None, None
+        parts = str(campaign_name).split(' - ')
+        if len(parts) == 0:
+            return None, None
+        first_part = parts[0].strip()
+        if '_' not in first_part:
+            return None, None
+        niche_product = first_part.split('_')
+        if len(niche_product) < 2:
+            return None, None
+        niche_code = re.sub(r'\d+$', '', niche_product[0])
+        product_code = niche_product[1]
+        return niche_code, product_code
+    
+    df[['nicheID', 'productID']] = df['Campaign name'].apply(lambda x: pd.Series(parse_campaign_name(x)))
+    df['niche_name'] = df['nicheID'].map(niche_dict)
+    df['product_name'] = df['productID'].map(product_dict)
+    
+    # Extract Ad Manager
+    def extract_ad_manager(campaign_name):
+        if pd.isna(campaign_name):
             return 'Other'
-        
-        df['Ad_Manager'] = df['Campaign name'].apply(extract_ad_manager)
-        
-        # Extract designID from Campaign name
-        # designID = nicheID + số + productID (lấy từ nicheID đến productID)
-        def extract_design_id(campaign_name, niche_id, product_id):
-            if pd.isna(campaign_name) or pd.isna(niche_id) or pd.isna(product_id):
-                return 'Unknown'
-            
-            campaign_str = str(campaign_name)
-            niche_str = str(niche_id)
-            product_str = str(product_id)
-            
-            # Pattern: NICHE + digits + _ + PRODUCT
-            # Example: "WDO123_WDO" -> designID = "WDO123"
-            import re
-            pattern = f"{re.escape(niche_str)}\\d+(?=_{re.escape(product_str)})"
-            match = re.search(pattern, campaign_str)
-            
-            if match:
-                return match.group(0)
-            
+        campaign_str = str(campaign_name).upper()
+        if 'AD-' in campaign_str:
+            start_idx = campaign_str.find('AD-') + 3
+            comma_idx = campaign_str.find(',', start_idx)
+            star_idx = campaign_str.find('*', start_idx)
+            if comma_idx != -1:
+                end_idx = comma_idx
+            elif star_idx != -1:
+                end_idx = star_idx
+            else:
+                end_idx = -1
+            if end_idx != -1:
+                ad_manager = campaign_str[start_idx:end_idx].strip()
+                return ad_manager if ad_manager else 'Other'
+        return 'Other'
+    
+    df['Ad_Manager'] = df['Campaign name'].apply(extract_ad_manager)
+    
+    # Extract designID
+    def extract_design_id(campaign_name, niche_id, product_id):
+        if pd.isna(campaign_name) or pd.isna(niche_id) or pd.isna(product_id):
             return 'Unknown'
-        
-        df['designID'] = df.apply(
-            lambda x: extract_design_id(x['Campaign name'], x['nicheID'], x['productID']), 
-            axis=1
-        )
-        
-        # Calculate metrics
-        df['CTR'] = (df['Unique outbound clicks'] / df['Impressions'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-        df['ATC_Rate'] = (df['Adds to cart'] / df['Unique outbound clicks'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-        df['Checkout_Rate'] = (df['Checkouts initiated'] / df['Adds to cart'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-        df['Purchase_Rate'] = (df['Purchases'] / df['Checkouts initiated'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-        df['CVR'] = (df['Purchases'] / df['Unique outbound clicks'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-        df['CPA'] = (df['Amount Spent'] / df['Purchases']).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-        
-        # Load pricing and calculate revenue/profit
-        pricing = load_product_pricing()
-        df['Selling_Price'] = df['productID'].map(pricing).fillna(0)
-        df['Revenue'] = (df['Purchases'] * df['Selling_Price']).round(2)
-        df['Profit'] = (df['Revenue'] - df['Amount Spent']).round(2)
-        df['Profit_Margin'] = ((df['Profit'] / df['Revenue']) * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-        df['ROAS'] = (df['Revenue'] / df['Amount Spent']).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-        
-        return df
-        
-    except FileNotFoundError:
-        st.error(f"❌ File not found: {file_path}")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Error loading data: {str(e)}")
-        st.stop()
+        campaign_str = str(campaign_name)
+        niche_str = str(niche_id)
+        product_str = str(product_id)
+        pattern = f"{re.escape(niche_str)}\\d+(?=_{re.escape(product_str)})"
+        match = re.search(pattern, campaign_str)
+        if match:
+            return match.group(0)
+        return 'Unknown'
+    
+    df['designID'] = df.apply(lambda x: extract_design_id(x['Campaign name'], x['nicheID'], x['productID']), axis=1)
+    
+    # Ensure numeric columns
+    numeric_cols = ['Amount Spent', 'Impressions', 'Unique outbound clicks', 
+                   'Adds to cart', 'Checkouts initiated', 'Purchases', 
+                   'CPM', 'Cost per Click', 'Cost per ATC', 'Frequency', 'Post comments']
+    
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    
+    # Calculate metrics
+    df['CTR'] = (df['Unique outbound clicks'] / df['Impressions'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    df['ATC_Rate'] = (df['Adds to cart'] / df['Unique outbound clicks'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    df['Checkout_Rate'] = (df['Checkouts initiated'] / df['Adds to cart'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    df['Purchase_Rate'] = (df['Purchases'] / df['Checkouts initiated'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    df['CVR'] = (df['Purchases'] / df['Unique outbound clicks'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    df['CPA'] = (df['Amount Spent'] / df['Purchases']).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    
+    # Calculate revenue/profit
+    pricing = load_product_pricing()
+    df['Selling_Price'] = df['productID'].map(pricing).fillna(0)
+    df['Revenue'] = (df['Purchases'] * df['Selling_Price']).round(2)
+    df['Profit'] = (df['Revenue'] - df['Amount Spent']).round(2)
+    df['Profit_Margin'] = ((df['Profit'] / df['Revenue']) * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    df['ROAS'] = (df['Revenue'] / df['Amount Spent']).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    
+    return df
 
-# Load data
-df = load_data()
-
-# Title
+# Main App
 st.markdown("# 📊 Ad Performance Dashboard")
-st.markdown(f"**Date Range:** Sep 19 - Sep 30, 2025")
+
+# File Upload Section
+st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+st.markdown("## 📁 Data Upload")
+
+uploaded_file = st.file_uploader(
+    "Upload your Facebook Ads data (Excel file)", 
+    type=['xlsx', 'xls'],
+    help="Upload the raw export from Facebook Ads Manager"
+)
+
+if uploaded_file is not None:
+    try:
+        # Read the uploaded file
+        df_raw = pd.read_excel(uploaded_file, sheet_name='Worksheet')
+        
+        # Preprocess data
+        with st.spinner('Processing data...'):
+            df = preprocess_data(df_raw)
+        
+        # Get date range from data
+        # Convert to datetime if they're strings
+        df['Reporting starts'] = pd.to_datetime(df['Reporting starts'], errors='coerce')
+        df['Reporting ends'] = pd.to_datetime(df['Reporting ends'], errors='coerce')
+        
+        date_start = df['Reporting starts'].min()
+        date_end = df['Reporting ends'].max()
+        
+        st.success(f"Data loaded successfully! {len(df)} rows processed.")
+        st.info(f"Date Range: {date_start.strftime('%Y-%m-%d')} to {date_end.strftime('%Y-%m-%d')}")
+        
+        # Show data preview
+        with st.expander("Preview Data"):
+            st.dataframe(df.head(10), use_container_width=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Store data in session state for persistence
+        st.session_state['df'] = df
+        st.session_state['date_range'] = f"{date_start.strftime('%b %d, %Y')} - {date_end.strftime('%b %d, %Y')}"
+        
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
+        st.stop()
+else:
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.warning("Please upload a data file to begin analysis")
+    st.stop()
+
+# Use data from session state
+df = st.session_state.get('df')
+date_range_display = st.session_state.get('date_range', 'N/A')
+
+if df is None:
+    st.stop()
+
+st.markdown(f"**Date Range:** {date_range_display}")
 st.markdown("---")
 
 # Sidebar Filters
-st.sidebar.header("🎚️ Filters")
+st.sidebar.header("Filters")
 
-# Ad Manager filter (NEW)
+# Ad Manager filter
 ad_manager_options = ['All'] + sorted(df['Ad_Manager'].unique().tolist())
-selected_ad_manager = st.sidebar.multiselect('👤 Ad Manager', ad_manager_options, default=['All'])
+selected_ad_manager = st.sidebar.multiselect('Ad Manager', ad_manager_options, default=['All'])
 
 # Age filter
 age_options = ['All'] + sorted(df['Age'].unique().tolist())
-selected_age = st.sidebar.multiselect('👥 Age Group', age_options, default=['All'])
+selected_age = st.sidebar.multiselect('Age Group', age_options, default=['All'])
 
 # Gender filter
 gender_options = ['All', 'male', 'female']
-selected_gender = st.sidebar.radio('⚥ Gender', gender_options)
+selected_gender = st.sidebar.radio('Gender', gender_options)
 
 # Niche filter
 niche_options = ['All'] + sorted(df['nicheID'].unique().tolist())
-selected_niche = st.sidebar.multiselect('🎯 Niche', niche_options, default=['All'])
+selected_niche = st.sidebar.multiselect('Niche', niche_options, default=['All'])
 
 # Product filter
 product_options = ['All'] + sorted(df['productID'].unique().tolist())
-selected_product = st.sidebar.multiselect('📦 Product', product_options, default=['All'])
+selected_product = st.sidebar.multiselect('Product', product_options, default=['All'])
 
 # Apply filters
 filtered_df = df.copy()
@@ -233,64 +348,62 @@ if 'All' not in selected_product and selected_product:
     filtered_df = filtered_df[filtered_df['productID'].isin(selected_product)]
 
 # KPI Cards
-st.markdown("### 📈 Key Metrics")
+st.markdown("### Key Metrics")
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 
 with col1:
     total_spend = filtered_df['Amount Spent'].sum()
-    st.metric("💰 Total Spend", f"${total_spend:,.2f}")
+    st.metric("Total Spend", f"${total_spend:,.2f}")
 
 with col2:
     total_purchases = filtered_df['Purchases'].sum()
-    st.metric("🛒 Purchases", f"{int(total_purchases)}")
+    st.metric("Purchases", f"{int(total_purchases)}")
 
 with col3:
     total_revenue = filtered_df['Revenue'].sum()
-    st.metric("💵 Revenue", f"${total_revenue:,.2f}")
+    st.metric("Revenue", f"${total_revenue:,.2f}")
 
 with col4:
     total_profit = filtered_df['Profit'].sum()
-    profit_color = "normal" if total_profit >= 0 else "inverse"
-    st.metric("📊 Profit", f"${total_profit:,.2f}", delta=None if total_profit >= 0 else f"Loss: ${abs(total_profit):,.2f}")
+    st.metric("Profit", f"${total_profit:,.2f}")
 
 with col5:
     avg_roas = filtered_df['ROAS'].mean() if total_spend > 0 else 0
-    roas_color = "normal" if avg_roas >= 2 else "inverse"
-    st.metric("🎯 ROAS", f"{avg_roas:.2f}x")
+    st.metric("ROAS", f"{avg_roas:.2f}x")
 
 with col6:
     avg_margin = filtered_df['Profit_Margin'].mean()
-    st.metric("📈 Profit Margin", f"{avg_margin:.1f}%")
+    st.metric("Profit Margin", f"{avg_margin:.1f}%")
 
 st.markdown("---")
 
 # Add a second row of detailed metrics
-st.markdown("### 💡 Performance Insights")
+st.markdown("### Performance Insights")
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 
 with col1:
     total_impressions = filtered_df['Impressions'].sum()
-    st.metric("👁️ Impressions", f"{total_impressions:,}")
+    st.metric("Impressions", f"{total_impressions:,}")
 
 with col2:
     total_clicks = filtered_df['Unique outbound clicks'].sum()
-    st.metric("🖱️ Clicks", f"{int(total_clicks):,}")
+    st.metric("Clicks", f"{int(total_clicks):,}")
 
 with col3:
     avg_cpa = filtered_df['CPA'].mean() if total_purchases > 0 else 0
-    st.metric("💵 Avg CPA", f"${avg_cpa:,.2f}")
+    st.metric("Avg CPA", f"${avg_cpa:,.2f}")
 
 with col4:
     avg_cvr = filtered_df['CVR'].mean()
-    st.metric("📈 Avg CVR", f"{avg_cvr:.2f}%")
+    st.metric("Avg CVR", f"{avg_cvr:.2f}%")
 
 with col5:
     avg_cpm = filtered_df['CPM'].mean()
-    st.metric("📊 Avg CPM", f"${avg_cpm:.2f}")
+    st.metric("Avg CPM", f"${avg_cpm:.2f}")
 
 with col6:
     total_atc = filtered_df['Adds to cart'].sum()
-    st.metric("🛒 Add to Cart", f"{int(total_atc)}")
+    st.metric("Add to Cart", f"{int(total_atc)}")
 
 st.markdown("---")
 
@@ -298,7 +411,7 @@ st.markdown("---")
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("### 🎯 Top Niches by Purchases")
+    st.markdown("### Top Niches by Purchases")
     niche_perf = filtered_df.groupby(['nicheID', 'niche_name']).agg({
         'Purchases': 'sum',
         'Amount Spent': 'sum',
@@ -314,7 +427,7 @@ with col1:
         orientation='h',
         marker=dict(
             color=niche_perf['Profit'],
-            colorscale='Blues',  # Light to dark blue gradient
+            colorscale='Blues',
             showscale=True,
             colorbar=dict(title="Profit ($)")
         ),
@@ -327,8 +440,7 @@ with col1:
     st.plotly_chart(fig_niche, use_container_width=True)
 
 with col2:
-    st.markdown("### 📦 Top Products by Purchases")
-    # Group by productID only to avoid missing data
+    st.markdown("### Top Products by Purchases")
     product_perf = filtered_df.groupby('productID').agg({
         'Purchases': 'sum',
         'Amount Spent': 'sum',
@@ -336,10 +448,9 @@ with col2:
         'Profit': 'sum',
         'CVR': 'mean',
         'ROAS': 'mean',
-        'product_name': 'first'  # Get first product_name for reference
+        'product_name': 'first'
     }).reset_index().sort_values('Purchases', ascending=True).tail(10)
     
-    # Create display name: show product_name if available, otherwise just productID
     product_perf['display_name'] = product_perf.apply(
         lambda x: f"{x['productID']} ({x['product_name']})" if pd.notna(x['product_name']) and x['product_name'] != 'Null' else x['productID'], 
         axis=1
@@ -351,7 +462,7 @@ with col2:
         orientation='h',
         marker=dict(
             color=product_perf['Profit'],
-            colorscale='Teal',  # Light to dark teal gradient
+            colorscale='Teal',
             showscale=True,
             colorbar=dict(title="Profit ($)")
         ),
@@ -367,7 +478,7 @@ with col2:
 col1, col2 = st.columns(2)
 
 with col1:
-    st.markdown("### ⚥ Gender Split")
+    st.markdown("### Gender Split")
     gender_data = filtered_df.groupby('Gender')['Purchases'].sum().reset_index()
     
     fig_gender = go.Figure(go.Pie(
@@ -382,7 +493,7 @@ with col1:
     st.plotly_chart(fig_gender, use_container_width=True)
 
 with col2:
-    st.markdown("### 👥 Age Group Performance")
+    st.markdown("### Age Group Performance")
     age_gender_data = filtered_df.groupby(['Age', 'Gender'])['Purchases'].sum().reset_index()
     
     fig_age = px.bar(
@@ -401,16 +512,14 @@ with col2:
 st.markdown("---")
 
 # Drill-Down Section
-st.markdown("## 🔍 Drill-Down Analysis by Design")
+st.markdown("## Drill-Down Analysis by Design")
 
-# Get list of products with purchases
 products_with_purchases = filtered_df[filtered_df['Purchases'] > 0].groupby('productID').agg({
     'Purchases': 'sum',
     'Profit': 'sum',
     'product_name': 'first'
 }).reset_index().sort_values('Purchases', ascending=False)
 
-# Create options for selectbox
 product_options_drilldown = ['Select a product...'] + [
     f"{row['productID']} - {row['Purchases']:.0f} purchases (${row['Profit']:.2f} profit)"
     for _, row in products_with_purchases.iterrows()
@@ -423,15 +532,12 @@ selected_product_display = st.selectbox(
 )
 
 if selected_product_display != 'Select a product...':
-    # Extract productID from selection
     selected_product_id = selected_product_display.split(' - ')[0]
     
-    st.markdown(f"### 📊 Design Breakdown for {selected_product_id}")
+    st.markdown(f"### Design Breakdown for {selected_product_id}")
     
-    # Filter data for selected product
     product_designs = filtered_df[filtered_df['productID'] == selected_product_id].copy()
     
-    # Aggregate by designID
     design_perf = product_designs.groupby('designID').agg({
         'Purchases': 'sum',
         'Amount Spent': 'sum',
@@ -443,13 +549,11 @@ if selected_product_display != 'Select a product...':
         'Adds to cart': 'sum'
     }).reset_index()
     
-    # Remove Unknown designs
     design_perf = design_perf[design_perf['designID'] != 'Unknown']
     
     if len(design_perf) > 0:
         design_perf = design_perf.sort_values('Purchases', ascending=False)
         
-        # Show metrics for this product
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Designs", len(design_perf))
@@ -460,7 +564,6 @@ if selected_product_display != 'Select a product...':
         with col4:
             st.metric("Avg ROAS", f"{design_perf['ROAS'].mean():.2f}x")
         
-        # Design performance chart
         col1, col2 = st.columns(2)
         
         with col1:
@@ -505,12 +608,10 @@ if selected_product_display != 'Select a product...':
             fig_design_profit.update_layout(height=500, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Profit ($)", yaxis_title="")
             st.plotly_chart(fig_design_profit, use_container_width=True)
         
-        # Detailed table for designs
         st.markdown("#### Design Details")
         design_table = design_perf[['designID', 'Purchases', 'Amount Spent', 'Revenue', 'Profit', 'ROAS', 'CVR', 'Unique outbound clicks', 'Adds to cart']].copy()
         design_table = design_table.sort_values('Profit', ascending=False)
         
-        # Format columns
         design_table['Amount Spent'] = design_table['Amount Spent'].apply(lambda x: f"${x:,.2f}")
         design_table['Revenue'] = design_table['Revenue'].apply(lambda x: f"${x:,.2f}")
         design_table['Profit'] = design_table['Profit'].apply(lambda x: f"${x:,.2f}")
@@ -521,21 +622,21 @@ if selected_product_display != 'Select a product...':
         
         st.dataframe(design_table, use_container_width=True, height=400, hide_index=True)
     else:
-        st.warning(f"No design data found for {selected_product_id}. This might be due to missing designID in campaign names.")
+        st.warning(f"No design data found for {selected_product_id}.")
 else:
-    st.info("👆 Select a product above to see detailed design breakdown and performance metrics.")
+    st.info("Select a product above to see detailed design breakdown and performance metrics.")
+
+st.markdown("---")
 
 # Row 4: Detailed Table
-st.markdown("### 📋 Campaign Details")
+st.markdown("### Campaign Details")
 
-# Prepare table data
 table_df = filtered_df[['Campaign name', 'nicheID', 'niche_name', 'productID', 'product_name', 'Age', 'Gender', 
                          'Amount Spent', 'Revenue', 'Profit', 'ROAS', 
                          'Unique outbound clicks', 'Adds to cart', 'Purchases', 
                          'CPA', 'CVR']].copy()
 table_df = table_df.sort_values('Profit', ascending=False)
 
-# Format columns
 table_df['Amount Spent'] = table_df['Amount Spent'].apply(lambda x: f"${x:,.2f}")
 table_df['Revenue'] = table_df['Revenue'].apply(lambda x: f"${x:,.2f}")
 table_df['Profit'] = table_df['Profit'].apply(lambda x: f"${x:,.2f}")
@@ -543,7 +644,6 @@ table_df['ROAS'] = table_df['ROAS'].apply(lambda x: f"{x:.2f}x")
 table_df['CPA'] = table_df['CPA'].apply(lambda x: f"${x:,.2f}")
 table_df['CVR'] = table_df['CVR'].apply(lambda x: f"{x:.2f}%")
 
-# Rename columns for display
 table_df.columns = ['Campaign Name', 'Niche ID', 'Niche', 'Product ID', 'Product', 'Age', 'Gender', 
                     'Spend', 'Revenue', 'Profit', 'ROAS',
                     'Clicks', 'ATC', 'Purchases', 'CPA', 'CVR']
@@ -555,15 +655,13 @@ st.dataframe(
     hide_index=True
 )
 
-# Download button
 csv = filtered_df.to_csv(index=False).encode('utf-8')
 st.download_button(
-    label="📥 Download CSV",
+    label="Download CSV",
     data=csv,
     file_name='ad_performance_data.csv',
     mime='text/csv',
 )
 
-# Footer
 st.markdown("---")
-st.markdown("**💡 Insights:** Use filters to drill down into specific segments. Click on charts for more details.")
+st.markdown("**Insights:** Use filters to drill down into specific segments. Click on charts for more details.")
