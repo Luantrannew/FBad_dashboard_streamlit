@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import re
 
 # Page config
@@ -85,10 +84,51 @@ def load_product_pricing():
 # Preprocessing function
 @st.cache_data
 def preprocess_data(df_raw):
-    """Preprocess raw Facebook Ads data"""
+    """Preprocess raw Facebook Ads data with flexible column handling"""
     
-    # Select needed columns
-    columns_needed = [
+    # Map common column name variations to standard names
+    column_mappings = {
+        'Amount spent (USD)': ['Amount spent', 'Spend', 'Cost'],
+        'CPM (cost per 1,000 impressions) (USD)': ['CPM', 'Cost per 1000 impressions'],
+        'Cost per unique outbound click (USD)': ['Cost per click', 'CPC', 'Cost per outbound click'],
+        'Cost per add to cart (USD)': ['Cost per ATC', 'Cost per add to cart'],
+        'Unique outbound clicks': ['Outbound clicks', 'Link clicks', 'Clicks'],
+        'Adds to cart': ['Add to cart', 'ATC'],
+        'Checkouts initiated': ['Checkouts', 'Initiated checkouts'],
+    }
+    
+    # Try to find columns with alternative names
+    df_raw_copy = df_raw.copy()
+    for standard_name, alternatives in column_mappings.items():
+        if standard_name not in df_raw_copy.columns:
+            for alt in alternatives:
+                if alt in df_raw_copy.columns:
+                    df_raw_copy = df_raw_copy.rename(columns={alt: standard_name})
+                    break
+    
+    # Add missing optional columns with defaults
+    default_values = {
+        'Reporting starts': pd.Timestamp.now(),
+        'Reporting ends': pd.Timestamp.now(),
+        'Ad set name': 'N/A',
+        'Ad name': 'N/A',
+        'CPM (cost per 1,000 impressions) (USD)': 0,
+        'Frequency': 0,
+        'Post comments': 0,
+        'Unique outbound clicks': 0,
+        'Cost per unique outbound click (USD)': 0,
+        'Adds to cart': 0,
+        'Cost per add to cart (USD)': 0,
+        'Checkouts initiated': 0,
+        'Purchases': 0
+    }
+    
+    for col, default_val in default_values.items():
+        if col not in df_raw_copy.columns:
+            df_raw_copy[col] = default_val
+    
+    # Define columns we want (in any order)
+    desired_columns = [
         'Reporting starts', 'Reporting ends',
         'Campaign name', 'Ad set name', 'Ad name',
         'Age', 'Gender',
@@ -99,7 +139,9 @@ def preprocess_data(df_raw):
         'Checkouts initiated', 'Purchases'
     ]
     
-    df = df_raw[columns_needed].copy()
+    # Select only existing columns (order doesn't matter)
+    existing_columns = [col for col in desired_columns if col in df_raw_copy.columns]
+    df = df_raw_copy[existing_columns].copy()
     
     # Rename columns
     df = df.rename(columns={
@@ -177,9 +219,10 @@ def preprocess_data(df_raw):
         product_code = niche_product[1]
         return niche_code, product_code
     
-    df[['nicheID', 'productID']] = df['Campaign name'].apply(lambda x: pd.Series(parse_campaign_name(x)))
-    df['niche_name'] = df['nicheID'].map(niche_dict)
-    df['product_name'] = df['productID'].map(product_dict)
+    if 'Campaign name' in df.columns:
+        df[['nicheID', 'productID']] = df['Campaign name'].apply(lambda x: pd.Series(parse_campaign_name(x)))
+        df['niche_name'] = df['nicheID'].map(niche_dict)
+        df['product_name'] = df['productID'].map(product_dict)
     
     # Extract Ad Manager
     def extract_ad_manager(campaign_name):
@@ -201,7 +244,8 @@ def preprocess_data(df_raw):
                 return ad_manager if ad_manager else 'Other'
         return 'Other'
     
-    df['Ad_Manager'] = df['Campaign name'].apply(extract_ad_manager)
+    if 'Campaign name' in df.columns:
+        df['Ad_Manager'] = df['Campaign name'].apply(extract_ad_manager)
     
     # Extract designID
     def extract_design_id(campaign_name, niche_id, product_id):
@@ -216,7 +260,8 @@ def preprocess_data(df_raw):
             return match.group(0)
         return 'Unknown'
     
-    df['designID'] = df.apply(lambda x: extract_design_id(x['Campaign name'], x['nicheID'], x['productID']), axis=1)
+    if all(col in df.columns for col in ['Campaign name', 'nicheID', 'productID']):
+        df['designID'] = df.apply(lambda x: extract_design_id(x['Campaign name'], x['nicheID'], x['productID']), axis=1)
     
     # Ensure numeric columns
     numeric_cols = ['Amount Spent', 'Impressions', 'Unique outbound clicks', 
@@ -228,29 +273,43 @@ def preprocess_data(df_raw):
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
     # Calculate metrics
-    df['CTR'] = (df['Unique outbound clicks'] / df['Impressions'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-    df['ATC_Rate'] = (df['Adds to cart'] / df['Unique outbound clicks'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-    df['Checkout_Rate'] = (df['Checkouts initiated'] / df['Adds to cart'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-    df['Purchase_Rate'] = (df['Purchases'] / df['Checkouts initiated'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-    df['CVR'] = (df['Purchases'] / df['Unique outbound clicks'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-    df['CPA'] = (df['Amount Spent'] / df['Purchases']).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    if 'Unique outbound clicks' in df.columns and 'Impressions' in df.columns:
+        df['CTR'] = (df['Unique outbound clicks'] / df['Impressions'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    
+    if 'Adds to cart' in df.columns and 'Unique outbound clicks' in df.columns:
+        df['ATC_Rate'] = (df['Adds to cart'] / df['Unique outbound clicks'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    
+    if 'Checkouts initiated' in df.columns and 'Adds to cart' in df.columns:
+        df['Checkout_Rate'] = (df['Checkouts initiated'] / df['Adds to cart'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    
+    if 'Purchases' in df.columns and 'Checkouts initiated' in df.columns:
+        df['Purchase_Rate'] = (df['Purchases'] / df['Checkouts initiated'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    
+    if 'Purchases' in df.columns and 'Unique outbound clicks' in df.columns:
+        df['CVR'] = (df['Purchases'] / df['Unique outbound clicks'] * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    
+    if 'Amount Spent' in df.columns and 'Purchases' in df.columns:
+        df['CPA'] = (df['Amount Spent'] / df['Purchases']).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
     
     # Calculate revenue/profit
-    pricing = load_product_pricing()
-    df['Selling_Price'] = df['productID'].map(pricing).fillna(0)
-    df['Revenue'] = (df['Purchases'] * df['Selling_Price']).round(2)
-    df['Profit'] = (df['Revenue'] - df['Amount Spent']).round(2)
-    df['Profit_Margin'] = ((df['Profit'] / df['Revenue']) * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
-    df['ROAS'] = (df['Revenue'] / df['Amount Spent']).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+    if 'productID' in df.columns and 'Purchases' in df.columns:
+        pricing = load_product_pricing()
+        df['Selling_Price'] = df['productID'].map(pricing).fillna(0)
+        df['Revenue'] = (df['Purchases'] * df['Selling_Price']).round(2)
+        
+        if 'Amount Spent' in df.columns:
+            df['Profit'] = (df['Revenue'] - df['Amount Spent']).round(2)
+            df['Profit_Margin'] = ((df['Profit'] / df['Revenue']) * 100).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
+            df['ROAS'] = (df['Revenue'] / df['Amount Spent']).replace([float('inf'), -float('inf')], 0).fillna(0).round(2)
     
     return df
 
 # Main App
-st.markdown("# 📊 Ad Performance Dashboard")
+st.markdown("# Ad Performance Dashboard")
 
 # File Upload Section
 st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-st.markdown("## 📁 Data Upload")
+st.markdown("## Data Upload")
 
 uploaded_file = st.file_uploader(
     "Upload your Facebook Ads data (Excel file)", 
@@ -263,20 +322,30 @@ if uploaded_file is not None:
         # Read the uploaded file
         df_raw = pd.read_excel(uploaded_file, sheet_name='Worksheet')
         
+        # Check for minimum required columns
+        required_cols = ['Campaign name', 'Age', 'Gender']
+        missing_required = [col for col in required_cols if col not in df_raw.columns]
+        
+        if missing_required:
+            st.error(f"Missing critical columns: {', '.join(missing_required)}")
+            st.stop()
+        
         # Preprocess data
         with st.spinner('Processing data...'):
             df = preprocess_data(df_raw)
         
         # Get date range from data
-        # Convert to datetime if they're strings
-        df['Reporting starts'] = pd.to_datetime(df['Reporting starts'], errors='coerce')
-        df['Reporting ends'] = pd.to_datetime(df['Reporting ends'], errors='coerce')
-        
-        date_start = df['Reporting starts'].min()
-        date_end = df['Reporting ends'].max()
+        if 'Reporting starts' in df.columns and 'Reporting ends' in df.columns:
+            df['Reporting starts'] = pd.to_datetime(df['Reporting starts'], errors='coerce')
+            df['Reporting ends'] = pd.to_datetime(df['Reporting ends'], errors='coerce')
+            date_start = df['Reporting starts'].min()
+            date_end = df['Reporting ends'].max()
+            date_range_display = f"{date_start.strftime('%b %d, %Y')} - {date_end.strftime('%b %d, %Y')}"
+        else:
+            date_range_display = 'N/A'
         
         st.success(f"Data loaded successfully! {len(df)} rows processed.")
-        st.info(f"Date Range: {date_start.strftime('%Y-%m-%d')} to {date_end.strftime('%Y-%m-%d')}")
+        st.info(f"Date Range: {date_range_display}")
         
         # Show data preview
         with st.expander("Preview Data"):
@@ -286,7 +355,7 @@ if uploaded_file is not None:
         
         # Store data in session state for persistence
         st.session_state['df'] = df
-        st.session_state['date_range'] = f"{date_start.strftime('%b %d, %Y')} - {date_end.strftime('%b %d, %Y')}"
+        st.session_state['date_range'] = date_range_display
         
     except Exception as e:
         st.error(f"Error processing file: {str(e)}")
@@ -310,100 +379,159 @@ st.markdown("---")
 st.sidebar.header("Filters")
 
 # Ad Manager filter
-ad_manager_options = ['All'] + sorted(df['Ad_Manager'].unique().tolist())
-selected_ad_manager = st.sidebar.multiselect('Ad Manager', ad_manager_options, default=['All'])
+if 'Ad_Manager' in df.columns:
+    ad_manager_options = ['All'] + sorted(df['Ad_Manager'].unique().tolist())
+    selected_ad_manager = st.sidebar.multiselect('Ad Manager', ad_manager_options, default=['All'])
+else:
+    selected_ad_manager = ['All']
 
 # Age filter
-age_options = ['All'] + sorted(df['Age'].unique().tolist())
-selected_age = st.sidebar.multiselect('Age Group', age_options, default=['All'])
+if 'Age' in df.columns:
+    age_options = ['All'] + sorted(df['Age'].unique().tolist())
+    selected_age = st.sidebar.multiselect('Age Group', age_options, default=['All'])
+else:
+    selected_age = ['All']
 
 # Gender filter
-gender_options = ['All', 'male', 'female']
-selected_gender = st.sidebar.radio('Gender', gender_options)
+if 'Gender' in df.columns:
+    gender_options = ['All', 'male', 'female']
+    selected_gender = st.sidebar.radio('Gender', gender_options)
+else:
+    selected_gender = 'All'
 
 # Niche filter
-niche_options = ['All'] + sorted(df['nicheID'].unique().tolist())
-selected_niche = st.sidebar.multiselect('Niche', niche_options, default=['All'])
+if 'nicheID' in df.columns:
+    niche_options = ['All'] + sorted(df['nicheID'].unique().tolist())
+    selected_niche = st.sidebar.multiselect('Niche', niche_options, default=['All'])
+else:
+    selected_niche = ['All']
 
 # Product filter
-product_options = ['All'] + sorted(df['productID'].unique().tolist())
-selected_product = st.sidebar.multiselect('Product', product_options, default=['All'])
+if 'productID' in df.columns:
+    product_options = ['All'] + sorted(df['productID'].unique().tolist())
+    selected_product = st.sidebar.multiselect('Product', product_options, default=['All'])
+else:
+    selected_product = ['All']
 
 # Apply filters
 filtered_df = df.copy()
 
-if 'All' not in selected_ad_manager and selected_ad_manager:
+if 'Ad_Manager' in df.columns and 'All' not in selected_ad_manager and selected_ad_manager:
     filtered_df = filtered_df[filtered_df['Ad_Manager'].isin(selected_ad_manager)]
 
-if 'All' not in selected_age and selected_age:
+if 'Age' in df.columns and 'All' not in selected_age and selected_age:
     filtered_df = filtered_df[filtered_df['Age'].isin(selected_age)]
 
-if selected_gender != 'All':
+if 'Gender' in df.columns and selected_gender != 'All':
     filtered_df = filtered_df[filtered_df['Gender'] == selected_gender]
 
-if 'All' not in selected_niche and selected_niche:
+if 'nicheID' in df.columns and 'All' not in selected_niche and selected_niche:
     filtered_df = filtered_df[filtered_df['nicheID'].isin(selected_niche)]
 
-if 'All' not in selected_product and selected_product:
+if 'productID' in df.columns and 'All' not in selected_product and selected_product:
     filtered_df = filtered_df[filtered_df['productID'].isin(selected_product)]
 
 # KPI Cards
 st.markdown("### Key Metrics")
+
+has_spend = 'Amount Spent' in filtered_df.columns
+has_purchases = 'Purchases' in filtered_df.columns
+has_revenue = 'Revenue' in filtered_df.columns
+has_profit = 'Profit' in filtered_df.columns
+has_impressions = 'Impressions' in filtered_df.columns
+has_clicks = 'Unique outbound clicks' in filtered_df.columns
+
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 
 with col1:
-    total_spend = filtered_df['Amount Spent'].sum()
-    st.metric("Total Spend", f"${total_spend:,.2f}")
+    if has_spend:
+        total_spend = filtered_df['Amount Spent'].sum()
+        st.metric("Total Spend", f"${total_spend:,.2f}")
+    else:
+        st.warning("Missing: Amount Spent")
 
 with col2:
-    total_purchases = filtered_df['Purchases'].sum()
-    st.metric("Purchases", f"{int(total_purchases)}")
+    if has_purchases:
+        total_purchases = filtered_df['Purchases'].sum()
+        st.metric("Purchases", f"{int(total_purchases)}")
+    else:
+        st.warning("Missing: Purchases")
 
 with col3:
-    total_revenue = filtered_df['Revenue'].sum()
-    st.metric("Revenue", f"${total_revenue:,.2f}")
+    if has_revenue:
+        total_revenue = filtered_df['Revenue'].sum()
+        st.metric("Revenue", f"${total_revenue:,.2f}")
+    else:
+        st.warning("Missing: productID")
 
 with col4:
-    total_profit = filtered_df['Profit'].sum()
-    st.metric("Profit", f"${total_profit:,.2f}")
+    if has_profit:
+        total_profit = filtered_df['Profit'].sum()
+        st.metric("Profit", f"${total_profit:,.2f}")
+    else:
+        st.warning("Missing: data")
 
 with col5:
-    avg_roas = filtered_df['ROAS'].mean() if total_spend > 0 else 0
-    st.metric("ROAS", f"{avg_roas:.2f}x")
+    if has_revenue and has_spend and has_spend and total_spend > 0:
+        avg_roas = filtered_df['ROAS'].mean()
+        st.metric("ROAS", f"{avg_roas:.2f}x")
+    else:
+        st.warning("Missing: ROAS data")
 
 with col6:
-    avg_margin = filtered_df['Profit_Margin'].mean()
-    st.metric("Profit Margin", f"{avg_margin:.1f}%")
+    if has_profit and has_revenue:
+        avg_margin = filtered_df['Profit_Margin'].mean()
+        st.metric("Profit Margin", f"{avg_margin:.1f}%")
+    else:
+        st.warning("Missing: margin data")
 
 st.markdown("---")
 
-# Add a second row of detailed metrics
+# Second row of metrics
 st.markdown("### Performance Insights")
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 
 with col1:
-    total_impressions = filtered_df['Impressions'].sum()
-    st.metric("Impressions", f"{total_impressions:,}")
+    if has_impressions:
+        total_impressions = filtered_df['Impressions'].sum()
+        st.metric("Impressions", f"{total_impressions:,}")
+    else:
+        st.warning("Missing: Impressions")
 
 with col2:
-    total_clicks = filtered_df['Unique outbound clicks'].sum()
-    st.metric("Clicks", f"{int(total_clicks):,}")
+    if has_clicks:
+        total_clicks = filtered_df['Unique outbound clicks'].sum()
+        st.metric("Clicks", f"{int(total_clicks):,}")
+    else:
+        st.warning("Missing: Clicks")
 
 with col3:
-    avg_cpa = filtered_df['CPA'].mean() if total_purchases > 0 else 0
-    st.metric("Avg CPA", f"${avg_cpa:,.2f}")
+    if 'CPA' in filtered_df.columns and has_purchases and total_purchases > 0:
+        avg_cpa = filtered_df['CPA'].mean()
+        st.metric("Avg CPA", f"${avg_cpa:,.2f}")
+    else:
+        st.warning("Missing: CPA data")
 
 with col4:
-    avg_cvr = filtered_df['CVR'].mean()
-    st.metric("Avg CVR", f"{avg_cvr:.2f}%")
+    if 'CVR' in filtered_df.columns:
+        avg_cvr = filtered_df['CVR'].mean()
+        st.metric("Avg CVR", f"{avg_cvr:.2f}%")
+    else:
+        st.warning("Missing: CVR data")
 
 with col5:
-    avg_cpm = filtered_df['CPM'].mean()
-    st.metric("Avg CPM", f"${avg_cpm:.2f}")
+    if 'CPM' in filtered_df.columns:
+        avg_cpm = filtered_df['CPM'].mean()
+        st.metric("Avg CPM", f"${avg_cpm:.2f}")
+    else:
+        st.warning("Missing: CPM")
 
 with col6:
-    total_atc = filtered_df['Adds to cart'].sum()
-    st.metric("Add to Cart", f"{int(total_atc)}")
+    if 'Adds to cart' in filtered_df.columns:
+        total_atc = filtered_df['Adds to cart'].sum()
+        st.metric("Add to Cart", f"{int(total_atc)}")
+    else:
+        st.warning("Missing: ATC")
 
 st.markdown("---")
 
@@ -412,256 +540,293 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("### Top Niches by Purchases")
-    niche_perf = filtered_df.groupby(['nicheID', 'niche_name']).agg({
-        'Purchases': 'sum',
-        'Amount Spent': 'sum',
-        'Revenue': 'sum',
-        'Profit': 'sum',
-        'CVR': 'mean',
-        'ROAS': 'mean'
-    }).reset_index().sort_values('Purchases', ascending=True).tail(10)
     
-    fig_niche = go.Figure(go.Bar(
-        x=niche_perf['Purchases'],
-        y=niche_perf['niche_name'],
-        orientation='h',
-        marker=dict(
-            color=niche_perf['Profit'],
-            colorscale='Blues',
-            showscale=True,
-            colorbar=dict(title="Profit ($)")
-        ),
-        text=niche_perf['Purchases'],
-        textposition='outside',
-        hovertemplate='<b>%{y}</b><br>Purchases: %{x}<br>Spend: $%{customdata[0]:.2f}<br>Revenue: $%{customdata[1]:.2f}<br>Profit: $%{customdata[2]:.2f}<br>ROAS: %{customdata[3]:.2f}x<extra></extra>',
-        customdata=niche_perf[['Amount Spent', 'Revenue', 'Profit', 'ROAS']].values
-    ))
-    fig_niche.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="")
-    st.plotly_chart(fig_niche, use_container_width=True)
+    if 'nicheID' in filtered_df.columns and 'Purchases' in filtered_df.columns:
+        niche_perf = filtered_df.groupby(['nicheID', 'niche_name']).agg({
+            'Purchases': 'sum',
+            'Amount Spent': 'sum',
+            'Revenue': 'sum',
+            'Profit': 'sum',
+            'CVR': 'mean',
+            'ROAS': 'mean'
+        }).reset_index().sort_values('Purchases', ascending=True).tail(10)
+        
+        fig_niche = go.Figure(go.Bar(
+            x=niche_perf['Purchases'],
+            y=niche_perf['niche_name'],
+            orientation='h',
+            marker=dict(
+                color=niche_perf['Profit'],
+                colorscale='Blues',
+                showscale=True,
+                colorbar=dict(title="Profit ($)")
+            ),
+            text=niche_perf['Purchases'],
+            textposition='outside',
+            hovertemplate='<b>%{y}</b><br>Purchases: %{x}<br>Spend: $%{customdata[0]:.2f}<br>Revenue: $%{customdata[1]:.2f}<br>Profit: $%{customdata[2]:.2f}<br>ROAS: %{customdata[3]:.2f}x<extra></extra>',
+            customdata=niche_perf[['Amount Spent', 'Revenue', 'Profit', 'ROAS']].values
+        ))
+        fig_niche.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="")
+        st.plotly_chart(fig_niche, use_container_width=True)
+    else:
+        st.warning("Cannot display: Missing Campaign name or Purchases")
 
 with col2:
     st.markdown("### Top Products by Purchases")
-    product_perf = filtered_df.groupby('productID').agg({
-        'Purchases': 'sum',
-        'Amount Spent': 'sum',
-        'Revenue': 'sum',
-        'Profit': 'sum',
-        'CVR': 'mean',
-        'ROAS': 'mean',
-        'product_name': 'first'
-    }).reset_index().sort_values('Purchases', ascending=True).tail(10)
     
-    product_perf['display_name'] = product_perf.apply(
-        lambda x: f"{x['productID']} ({x['product_name']})" if pd.notna(x['product_name']) and x['product_name'] != 'Null' else x['productID'], 
-        axis=1
-    )
-    
-    fig_product = go.Figure(go.Bar(
-        x=product_perf['Purchases'],
-        y=product_perf['display_name'],
-        orientation='h',
-        marker=dict(
-            color=product_perf['Profit'],
-            colorscale='Teal',
-            showscale=True,
-            colorbar=dict(title="Profit ($)")
-        ),
-        text=product_perf['Purchases'],
-        textposition='outside',
-        hovertemplate='<b>%{y}</b><br>Purchases: %{x}<br>Spend: $%{customdata[0]:.2f}<br>Revenue: $%{customdata[1]:.2f}<br>Profit: $%{customdata[2]:.2f}<br>ROAS: %{customdata[3]:.2f}x<extra></extra>',
-        customdata=product_perf[['Amount Spent', 'Revenue', 'Profit', 'ROAS']].values
-    ))
-    fig_product.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="")
-    st.plotly_chart(fig_product, use_container_width=True)
+    if 'productID' in filtered_df.columns and 'Purchases' in filtered_df.columns:
+        product_perf = filtered_df.groupby('productID').agg({
+            'Purchases': 'sum',
+            'Amount Spent': 'sum',
+            'Revenue': 'sum',
+            'Profit': 'sum',
+            'CVR': 'mean',
+            'ROAS': 'mean',
+            'product_name': 'first'
+        }).reset_index().sort_values('Purchases', ascending=True).tail(10)
+        
+        product_perf['display_name'] = product_perf.apply(
+            lambda x: f"{x['productID']} ({x['product_name']})" if pd.notna(x['product_name']) and x['product_name'] != 'Null' else x['productID'], 
+            axis=1
+        )
+        
+        fig_product = go.Figure(go.Bar(
+            x=product_perf['Purchases'],
+            y=product_perf['display_name'],
+            orientation='h',
+            marker=dict(
+                color=product_perf['Profit'],
+                colorscale='Teal',
+                showscale=True,
+                colorbar=dict(title="Profit ($)")
+            ),
+            text=product_perf['Purchases'],
+            textposition='outside',
+            hovertemplate='<b>%{y}</b><br>Purchases: %{x}<br>Spend: $%{customdata[0]:.2f}<br>Revenue: $%{customdata[1]:.2f}<br>Profit: $%{customdata[2]:.2f}<br>ROAS: %{customdata[3]:.2f}x<extra></extra>',
+            customdata=product_perf[['Amount Spent', 'Revenue', 'Profit', 'ROAS']].values
+        ))
+        fig_product.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="")
+        st.plotly_chart(fig_product, use_container_width=True)
+    else:
+        st.warning("Cannot display: Missing Campaign name or Purchases")
 
-# Row 3: Demographics
+# Demographics
 col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("### Gender Split")
-    gender_data = filtered_df.groupby('Gender')['Purchases'].sum().reset_index()
     
-    fig_gender = go.Figure(go.Pie(
-        labels=gender_data['Gender'],
-        values=gender_data['Purchases'],
-        hole=0.4,
-        marker=dict(colors=[COLORS['male'], COLORS['female']]),
-        textinfo='label+percent',
-        textposition='outside'
-    ))
-    fig_gender.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0), showlegend=True)
-    st.plotly_chart(fig_gender, use_container_width=True)
+    if 'Gender' in filtered_df.columns and 'Purchases' in filtered_df.columns:
+        gender_data = filtered_df.groupby('Gender')['Purchases'].sum().reset_index()
+        
+        fig_gender = go.Figure(go.Pie(
+            labels=gender_data['Gender'],
+            values=gender_data['Purchases'],
+            hole=0.4,
+            marker=dict(colors=[COLORS['female'], COLORS['male']]),
+            textinfo='label+percent',
+            textposition='outside'
+        ))
+        fig_gender.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0), showlegend=True)
+        st.plotly_chart(fig_gender, use_container_width=True)
+    else:
+        st.warning("Cannot display: Missing Gender or Purchases")
 
 with col2:
     st.markdown("### Age Group Performance")
-    age_gender_data = filtered_df.groupby(['Age', 'Gender'])['Purchases'].sum().reset_index()
     
-    fig_age = px.bar(
-        age_gender_data,
-        x='Purchases',
-        y='Age',
-        color='Gender',
-        orientation='h',
-        color_discrete_map={'male': COLORS['male'], 'female': COLORS['female']},
-        text='Purchases'
-    )
-    fig_age.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="Age")
-    fig_age.update_traces(textposition='outside')
-    st.plotly_chart(fig_age, use_container_width=True)
+    if 'Age' in filtered_df.columns and 'Gender' in filtered_df.columns and 'Purchases' in filtered_df.columns:
+        age_gender_data = filtered_df.groupby(['Age', 'Gender'])['Purchases'].sum().reset_index()
+        
+        fig_age = px.bar(
+            age_gender_data,
+            x='Purchases',
+            y='Age',
+            color='Gender',
+            orientation='h',
+            color_discrete_map={'male': COLORS['male'], 'female': COLORS['female']},
+            text='Purchases'
+        )
+        fig_age.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="Age")
+        fig_age.update_traces(textposition='outside')
+        st.plotly_chart(fig_age, use_container_width=True)
+    else:
+        st.warning("Cannot display: Missing Age, Gender or Purchases")
 
 st.markdown("---")
 
 # Drill-Down Section
 st.markdown("## Drill-Down Analysis by Design")
 
-products_with_purchases = filtered_df[filtered_df['Purchases'] > 0].groupby('productID').agg({
-    'Purchases': 'sum',
-    'Profit': 'sum',
-    'product_name': 'first'
-}).reset_index().sort_values('Purchases', ascending=False)
-
-product_options_drilldown = ['Select a product...'] + [
-    f"{row['productID']} - {row['Purchases']:.0f} purchases (${row['Profit']:.2f} profit)"
-    for _, row in products_with_purchases.iterrows()
-]
-
-selected_product_display = st.selectbox(
-    "Select a product to see design breakdown:",
-    options=product_options_drilldown,
-    key='product_drilldown'
-)
-
-if selected_product_display != 'Select a product...':
-    selected_product_id = selected_product_display.split(' - ')[0]
-    
-    st.markdown(f"### Design Breakdown for {selected_product_id}")
-    
-    product_designs = filtered_df[filtered_df['productID'] == selected_product_id].copy()
-    
-    design_perf = product_designs.groupby('designID').agg({
+if 'productID' in filtered_df.columns and 'Purchases' in filtered_df.columns:
+    products_with_purchases = filtered_df[filtered_df['Purchases'] > 0].groupby('productID').agg({
         'Purchases': 'sum',
-        'Amount Spent': 'sum',
-        'Revenue': 'sum',
         'Profit': 'sum',
-        'ROAS': 'mean',
-        'CVR': 'mean',
-        'Unique outbound clicks': 'sum',
-        'Adds to cart': 'sum'
-    }).reset_index()
-    
-    design_perf = design_perf[design_perf['designID'] != 'Unknown']
-    
-    if len(design_perf) > 0:
-        design_perf = design_perf.sort_values('Purchases', ascending=False)
+        'product_name': 'first'
+    }).reset_index().sort_values('Purchases', ascending=False)
+
+    product_options_drilldown = ['Select a product...'] + [
+        f"{row['productID']} - {row['Purchases']:.0f} purchases (${row['Profit']:.2f} profit)"
+        for _, row in products_with_purchases.iterrows()
+    ]
+
+    selected_product_display = st.selectbox(
+        "Select a product to see design breakdown:",
+        options=product_options_drilldown,
+        key='product_drilldown'
+    )
+
+    if selected_product_display != 'Select a product...':
+        selected_product_id = selected_product_display.split(' - ')[0]
         
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Designs", len(design_perf))
-        with col2:
-            st.metric("Total Purchases", f"{int(design_perf['Purchases'].sum())}")
-        with col3:
-            st.metric("Total Profit", f"${design_perf['Profit'].sum():,.2f}")
-        with col4:
-            st.metric("Avg ROAS", f"{design_perf['ROAS'].mean():.2f}x")
+        st.markdown(f"### Design Breakdown for {selected_product_id}")
         
-        col1, col2 = st.columns(2)
+        product_designs = filtered_df[filtered_df['productID'] == selected_product_id].copy()
         
-        with col1:
-            st.markdown("#### Top Designs by Purchases")
-            top_designs = design_perf.head(15).sort_values('Purchases', ascending=True)
+        if 'designID' in product_designs.columns:
+            design_perf = product_designs.groupby('designID').agg({
+                'Purchases': 'sum',
+                'Amount Spent': 'sum',
+                'Revenue': 'sum',
+                'Profit': 'sum',
+                'ROAS': 'mean',
+                'CVR': 'mean',
+                'Unique outbound clicks': 'sum',
+                'Adds to cart': 'sum'
+            }).reset_index()
             
-            fig_design_purchases = go.Figure(go.Bar(
-                x=top_designs['Purchases'],
-                y=top_designs['designID'],
-                orientation='h',
-                marker=dict(
-                    color=top_designs['Purchases'],
-                    colorscale='Viridis',
-                    showscale=False
-                ),
-                text=top_designs['Purchases'],
-                textposition='outside',
-                hovertemplate='<b>%{y}</b><br>Purchases: %{x}<br>Profit: $%{customdata[0]:.2f}<br>ROAS: %{customdata[1]:.2f}x<extra></extra>',
-                customdata=top_designs[['Profit', 'ROAS']].values
-            ))
-            fig_design_purchases.update_layout(height=500, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="")
-            st.plotly_chart(fig_design_purchases, use_container_width=True)
-        
-        with col2:
-            st.markdown("#### Top Designs by Profit")
-            top_designs_profit = design_perf.head(15).sort_values('Profit', ascending=True)
+            design_perf = design_perf[design_perf['designID'] != 'Unknown']
             
-            fig_design_profit = go.Figure(go.Bar(
-                x=top_designs_profit['Profit'],
-                y=top_designs_profit['designID'],
-                orientation='h',
-                marker=dict(
-                    color=top_designs_profit['Profit'],
-                    colorscale='Teal',
-                    showscale=False
-                ),
-                text=[f"${x:.0f}" for x in top_designs_profit['Profit']],
-                textposition='outside',
-                hovertemplate='<b>%{y}</b><br>Profit: $%{x:.2f}<br>Purchases: %{customdata[0]}<br>ROAS: %{customdata[1]:.2f}x<extra></extra>',
-                customdata=top_designs_profit[['Purchases', 'ROAS']].values
-            ))
-            fig_design_profit.update_layout(height=500, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Profit ($)", yaxis_title="")
-            st.plotly_chart(fig_design_profit, use_container_width=True)
-        
-        st.markdown("#### Design Details")
-        design_table = design_perf[['designID', 'Purchases', 'Amount Spent', 'Revenue', 'Profit', 'ROAS', 'CVR', 'Unique outbound clicks', 'Adds to cart']].copy()
-        design_table = design_table.sort_values('Profit', ascending=False)
-        
-        design_table['Amount Spent'] = design_table['Amount Spent'].apply(lambda x: f"${x:,.2f}")
-        design_table['Revenue'] = design_table['Revenue'].apply(lambda x: f"${x:,.2f}")
-        design_table['Profit'] = design_table['Profit'].apply(lambda x: f"${x:,.2f}")
-        design_table['ROAS'] = design_table['ROAS'].apply(lambda x: f"{x:.2f}x")
-        design_table['CVR'] = design_table['CVR'].apply(lambda x: f"{x:.2f}%")
-        
-        design_table.columns = ['Design ID', 'Purchases', 'Spend', 'Revenue', 'Profit', 'ROAS', 'CVR', 'Clicks', 'ATC']
-        
-        st.dataframe(design_table, use_container_width=True, height=400, hide_index=True)
+            if len(design_perf) > 0:
+                design_perf = design_perf.sort_values('Purchases', ascending=False)
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Designs", len(design_perf))
+                with col2:
+                    st.metric("Total Purchases", f"{int(design_perf['Purchases'].sum())}")
+                with col3:
+                    st.metric("Total Profit", f"${design_perf['Profit'].sum():,.2f}")
+                with col4:
+                    st.metric("Avg ROAS", f"{design_perf['ROAS'].mean():.2f}x")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("#### Top Designs by Purchases")
+                    top_designs = design_perf.head(15).sort_values('Purchases', ascending=True)
+                    
+                    fig_design_purchases = go.Figure(go.Bar(
+                        x=top_designs['Purchases'],
+                        y=top_designs['designID'],
+                        orientation='h',
+                        marker=dict(
+                            color=top_designs['Purchases'],
+                            colorscale='Viridis',
+                            showscale=False
+                        ),
+                        text=top_designs['Purchases'],
+                        textposition='outside',
+                        hovertemplate='<b>%{y}</b><br>Purchases: %{x}<br>Profit: $%{customdata[0]:.2f}<br>ROAS: %{customdata[1]:.2f}x<extra></extra>',
+                        customdata=top_designs[['Profit', 'ROAS']].values
+                    ))
+                    fig_design_purchases.update_layout(height=500, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="")
+                    st.plotly_chart(fig_design_purchases, use_container_width=True)
+                
+                with col2:
+                    st.markdown("#### Top Designs by Profit")
+                    top_designs_profit = design_perf.head(15).sort_values('Profit', ascending=True)
+                    
+                    fig_design_profit = go.Figure(go.Bar(
+                        x=top_designs_profit['Profit'],
+                        y=top_designs_profit['designID'],
+                        orientation='h',
+                        marker=dict(
+                            color=top_designs_profit['Profit'],
+                            colorscale='Teal',
+                            showscale=False
+                        ),
+                        text=[f"${x:.0f}" for x in top_designs_profit['Profit']],
+                        textposition='outside',
+                        hovertemplate='<b>%{y}</b><br>Profit: $%{x:.2f}<br>Purchases: %{customdata[0]}<br>ROAS: %{customdata[1]:.2f}x<extra></extra>',
+                        customdata=top_designs_profit[['Purchases', 'ROAS']].values
+                    ))
+                    fig_design_profit.update_layout(height=500, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Profit ($)", yaxis_title="")
+                    st.plotly_chart(fig_design_profit, use_container_width=True)
+                
+                st.markdown("#### Design Details")
+                design_table = design_perf[['designID', 'Purchases', 'Amount Spent', 'Revenue', 'Profit', 'ROAS', 'CVR', 'Unique outbound clicks', 'Adds to cart']].copy()
+                design_table = design_table.sort_values('Profit', ascending=False)
+                
+                design_table['Amount Spent'] = design_table['Amount Spent'].apply(lambda x: f"${x:,.2f}")
+                design_table['Revenue'] = design_table['Revenue'].apply(lambda x: f"${x:,.2f}")
+                design_table['Profit'] = design_table['Profit'].apply(lambda x: f"${x:,.2f}")
+                design_table['ROAS'] = design_table['ROAS'].apply(lambda x: f"{x:.2f}x")
+                design_table['CVR'] = design_table['CVR'].apply(lambda x: f"{x:.2f}%")
+                
+                design_table.columns = ['Design ID', 'Purchases', 'Spend', 'Revenue', 'Profit', 'ROAS', 'CVR', 'Clicks', 'ATC']
+                
+                st.dataframe(design_table, use_container_width=True, height=400, hide_index=True)
+            else:
+                st.warning(f"No design data found for {selected_product_id}.")
+        else:
+            st.warning("Cannot extract designID from Campaign names")
     else:
-        st.warning(f"No design data found for {selected_product_id}.")
+        st.info("Select a product above to see detailed design breakdown")
 else:
-    st.info("Select a product above to see detailed design breakdown and performance metrics.")
+    st.warning("Cannot display drill-down: Missing productID or Purchases")
 
 st.markdown("---")
 
-# Row 4: Detailed Table
+# Campaign Details Table
 st.markdown("### Campaign Details")
 
-table_df = filtered_df[['Campaign name', 'nicheID', 'niche_name', 'productID', 'product_name', 'Age', 'Gender', 
-                         'Amount Spent', 'Revenue', 'Profit', 'ROAS', 
-                         'Unique outbound clicks', 'Adds to cart', 'Purchases', 
-                         'CPA', 'CVR']].copy()
-table_df = table_df.sort_values('Profit', ascending=False)
+if 'Campaign name' in filtered_df.columns:
+    display_cols = [col for col in ['Campaign name', 'nicheID', 'niche_name', 'productID', 'product_name', 'Age', 'Gender', 
+                             'Amount Spent', 'Revenue', 'Profit', 'ROAS', 
+                             'Unique outbound clicks', 'Adds to cart', 'Purchases', 
+                             'CPA', 'CVR'] if col in filtered_df.columns]
+    
+    table_df = filtered_df[display_cols].copy()
+    
+    if 'Profit' in table_df.columns:
+        table_df = table_df.sort_values('Profit', ascending=False)
 
-table_df['Amount Spent'] = table_df['Amount Spent'].apply(lambda x: f"${x:,.2f}")
-table_df['Revenue'] = table_df['Revenue'].apply(lambda x: f"${x:,.2f}")
-table_df['Profit'] = table_df['Profit'].apply(lambda x: f"${x:,.2f}")
-table_df['ROAS'] = table_df['ROAS'].apply(lambda x: f"{x:.2f}x")
-table_df['CPA'] = table_df['CPA'].apply(lambda x: f"${x:,.2f}")
-table_df['CVR'] = table_df['CVR'].apply(lambda x: f"{x:.2f}%")
+    # Format numeric columns
+    for col in ['Amount Spent', 'Revenue', 'Profit', 'CPA']:
+        if col in table_df.columns:
+            table_df[col] = table_df[col].apply(lambda x: f"${x:,.2f}")
+    
+    if 'ROAS' in table_df.columns:
+        table_df['ROAS'] = table_df['ROAS'].apply(lambda x: f"{x:.2f}x")
+    
+    if 'CVR' in table_df.columns:
+        table_df['CVR'] = table_df['CVR'].apply(lambda x: f"{x:.2f}%")
 
-table_df.columns = ['Campaign Name', 'Niche ID', 'Niche', 'Product ID', 'Product', 'Age', 'Gender', 
-                    'Spend', 'Revenue', 'Profit', 'ROAS',
-                    'Clicks', 'ATC', 'Purchases', 'CPA', 'CVR']
+    # Rename for display
+    rename_map = {
+        'Campaign name': 'Campaign Name',
+        'nicheID': 'Niche ID',
+        'niche_name': 'Niche',
+        'productID': 'Product ID',
+        'product_name': 'Product',
+        'Amount Spent': 'Spend',
+        'Unique outbound clicks': 'Clicks',
+        'Adds to cart': 'ATC'
+    }
+    table_df = table_df.rename(columns=rename_map)
 
-st.dataframe(
-    table_df,
-    use_container_width=True,
-    height=400,
-    hide_index=True
-)
+    st.dataframe(table_df, use_container_width=True, height=400, hide_index=True)
 
-csv = filtered_df.to_csv(index=False).encode('utf-8')
-st.download_button(
-    label="Download CSV",
-    data=csv,
-    file_name='ad_performance_data.csv',
-    mime='text/csv',
-)
+    csv = filtered_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="Download CSV",
+        data=csv,
+        file_name='ad_performance_data.csv',
+        mime='text/csv',
+    )
+else:
+    st.warning("Cannot display table: Missing Campaign name column")
 
 st.markdown("---")
-st.markdown("**Insights:** Use filters to drill down into specific segments. Click on charts for more details.")
+st.markdown("**Insights:** Use filters to drill down into specific segments.")
