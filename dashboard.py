@@ -380,14 +380,16 @@ st.sidebar.header("Filters")
 
 # Ad Manager filter
 if 'Ad_Manager' in df.columns:
-    ad_manager_options = ['All'] + sorted(df['Ad_Manager'].unique().tolist())
+    ad_manager_values = df['Ad_Manager'].dropna().unique().tolist()
+    ad_manager_options = ['All'] + sorted([x for x in ad_manager_values if x])
     selected_ad_manager = st.sidebar.multiselect('Ad Manager', ad_manager_options, default=['All'])
 else:
     selected_ad_manager = ['All']
 
 # Age filter
 if 'Age' in df.columns:
-    age_options = ['All'] + sorted(df['Age'].unique().tolist())
+    age_values = df['Age'].dropna().unique().tolist()
+    age_options = ['All'] + sorted([x for x in age_values if x])
     selected_age = st.sidebar.multiselect('Age Group', age_options, default=['All'])
 else:
     selected_age = ['All']
@@ -401,14 +403,16 @@ else:
 
 # Niche filter
 if 'nicheID' in df.columns:
-    niche_options = ['All'] + sorted(df['nicheID'].unique().tolist())
+    niche_values = df['nicheID'].dropna().unique().tolist()
+    niche_options = ['All'] + sorted([x for x in niche_values if x])
     selected_niche = st.sidebar.multiselect('Niche', niche_options, default=['All'])
 else:
     selected_niche = ['All']
 
 # Product filter
 if 'productID' in df.columns:
-    product_options = ['All'] + sorted(df['productID'].unique().tolist())
+    product_values = df['productID'].dropna().unique().tolist()
+    product_options = ['All'] + sorted([x for x in product_values if x])
     selected_product = st.sidebar.multiselect('Product', product_options, default=['All'])
 else:
     selected_product = ['All']
