@@ -650,6 +650,11 @@ with col2:
     if 'Age' in filtered_df.columns and 'Gender' in filtered_df.columns and 'Purchases' in filtered_df.columns:
         age_gender_data = filtered_df.groupby(['Age', 'Gender'])['Purchases'].sum().reset_index()
         
+        # Add text column with conditional display (hide 0 values)
+        age_gender_data['text_display'] = age_gender_data['Purchases'].apply(
+            lambda x: str(int(x)) if x > 0 else ''
+        )
+        
         fig_age = px.bar(
             age_gender_data,
             x='Purchases',
@@ -657,10 +662,10 @@ with col2:
             color='Gender',
             orientation='h',
             color_discrete_map={'male': COLORS['male'], 'female': COLORS['female']},
-            text='Purchases'
+            text='text_display'  # Use conditional text instead
         )
         fig_age.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="Purchases", yaxis_title="Age")
-        fig_age.update_traces(textposition='outside')
+        fig_age.update_traces(textposition='inside')  # Change to 'inside' for cleaner look
         st.plotly_chart(fig_age, use_container_width=True)
     else:
         st.warning("Cannot display: Missing Age, Gender or Purchases")
