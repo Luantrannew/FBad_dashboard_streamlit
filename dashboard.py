@@ -308,11 +308,19 @@ def preprocess_data(df_raw):
 st.markdown("# Ad Performance Dashboard")
 
 # File Upload Section
-st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+# st.markdown('<div class="upload-section">', unsafe_allow_html=True)
 st.markdown("## Data Upload")
+st.markdown("""
+**Upload Guidelines:**
+- Supported formats: Excel (.xlsx, .xls)
+- Use age and gender breakdown file from Facebook Ads Manager
+- Maximum file size: 200MB
+- Recommended: < 1,000,000 rows for optimal performance
+- Estimated capacity: ~2-3 million rows at 200MB limit
+""")
 
 uploaded_file = st.file_uploader(
-    "Upload your Facebook Ads data (Excel file)", 
+    "Upload your Facebook Ads data (Excel file) ", 
     type=['xlsx', 'xls'],
     help="Upload the raw export from Facebook Ads Manager"
 )
